@@ -90,25 +90,38 @@ if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
     $q = (nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits | Select-Object -First 1)
     if ($q) { $parts = $q.Split(','); $gpuName = $parts[0].Trim(); $vramGB = [math]::Round([double]$parts[1].Trim() / 1024) }
 }
+$allGpus = @(Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name)
 if (-not $gpuName) {
-    $gpuName = (Get-CimInstance Win32_VideoController | Select-Object -First 1 -ExpandProperty Name)
+    # Prefer a dedicated card (AMD/NVIDIA) over built-in Intel graphics.
+    $gpuName = ($allGpus | Where-Object { $_ -match 'Radeon|NVIDIA|GeForce' } | Select-Object -First 1)
+    if (-not $gpuName) { $gpuName = ($allGpus | Where-Object { $_ -match 'Arc' } | Select-Object -First 1) }
+    if (-not $gpuName) { $gpuName = $allGpus | Select-Object -First 1 }
 }
-Info "GPU: $gpuName $(if ($vramGB) { "($vramGB GB)" })"
+Info "Graphics found: $($allGpus -join ', ')"
+Info "Using: $gpuName $(if ($vramGB) { "($vramGB GB)" })"
 
 if ($vramGB -gt 0) {
     if ($gpuName -match 'GTX (9|10)\d\d') { $torchIndex = 'https://download.pytorch.org/whl/cu126' }
     else { $torchIndex = 'https://download.pytorch.org/whl/cu130' }
     $mode = 'nvidia'
+} elseif ($gpuName -match 'Intel.*Arc') {
+    Info 'Intel Arc graphics - installing the Intel GPU (XPU) version of PyTorch.'
+    $torchIndex = 'https://download.pytorch.org/whl/xpu'
+    $mode = 'xpu'
 } else {
-    Warn 'No NVIDIA GPU detected. Installing the CPU version - it will run, but video generation will be very slow.'
+    Warn 'No supported GPU detected. Installing the CPU version - it will run, but generation will be slow.'
     $torchIndex = 'https://download.pytorch.org/whl/cpu'
     $mode = 'cpu'
 }
-Set-Content -Path (Join-Path $System 'gpu.txt') -Value "$mode`n$gpuName`n$vramGB"
+$gpuFile = Join-Path $System 'gpu.txt'
+$prevMode = if (Test-Path $gpuFile) { Get-Content $gpuFile | Select-Object -First 1 } else { '' }
+Set-Content -Path $gpuFile -Value "$mode`n$gpuName`n$vramGB"
 
 # ---------------------------------------------------------------- packages
 Step 'Installing PyTorch (largest download, ~3 GB)'
-& $Uv pip install --python $Py torch torchvision torchaudio --extra-index-url $torchIndex | Out-Host
+$reinstall = @()
+if ($prevMode -and $prevMode -ne $mode) { Info "Switching PyTorch from '$prevMode' to '$mode'."; $reinstall = @('--reinstall-package','torch','--reinstall-package','torchvision','--reinstall-package','torchaudio') }
+& $Uv pip install --python $Py torch torchvision torchaudio --extra-index-url $torchIndex @reinstall | Out-Host
 Check-Exit 'installing PyTorch'
 
 Step 'Installing ComfyUI requirements + ComfyUI-Manager'
