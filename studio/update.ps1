@@ -12,6 +12,7 @@ $env:UV_CACHE_DIR = Join-Path $Root 'system\cache'
 Write-Host 'Close ComfyUI Studio before updating.' -ForegroundColor Yellow
 Write-Host ''
 Write-Host '==> Pulling latest code from your GitHub repo' -ForegroundColor Cyan
+git -C $App checkout -- studio   # Claude may have pushed studio files straight to this PC; GitHub has the same copy
 git -C $App pull --ff-only
 if ($LASTEXITCODE -ne 0) { Write-Host 'Update could not be applied automatically (local changes?). Ask Claude for help.' -ForegroundColor Red; Read-Host 'Press Enter to close'; exit 1 }
 
