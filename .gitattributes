@@ -1,3 +1,6 @@
 /web/assets/** linguist-generated
 /web/** linguist-vendored
 comfy_api_nodes/apis/__init__.py linguist-generated
+studio/*.ps1 text eol=crlf
+studio/*.bat text eol=crlf
+studio/*.ico binary
