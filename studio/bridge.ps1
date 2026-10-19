@@ -24,14 +24,50 @@ function Write-Result($name, $obj) {
 
 $AllowedDirs = @('checkpoints','diffusion_models','text_encoders','vae','loras','upscale_models','clip_vision','controlnet','unet','clip')
 
+function Get-SystemReport {
+    # Read-only hardware/software snapshot. Changes nothing.
+    $os  = Get-CimInstance Win32_OperatingSystem
+    $gpuReg = @{}
+    Get-ChildItem 'HKLM:\SYSTEM\ControlSet001\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}' -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+            if ($p.DriverDesc) { $gpuReg[$p.DriverDesc] = [math]::Round(([double]$p.'HardwareInformation.qwMemorySize') / 1GB, 1) }
+        }
+    $py = Join-Path $Root 'system\venv\Scripts\python.exe'
+    $torch = try { & $py -c "import torch,sys;x=getattr(torch,'xpu',None);print(torch.__version__,'cuda',torch.cuda.is_available(),'xpu',bool(x and x.is_available()),'py',sys.version.split()[0])" 2>&1 } catch { $_.Exception.Message }
+    [ordered]@{
+        computer   = $env:COMPUTERNAME
+        os         = "$($os.Caption) $($os.Version) build $($os.BuildNumber)"
+        ram_gb     = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
+        ram_free_gb= [math]::Round($os.FreePhysicalMemory / 1MB, 1)
+        ram_sticks = @(Get-CimInstance Win32_PhysicalMemory | ForEach-Object { "$([math]::Round($_.Capacity/1GB))GB @ $($_.ConfiguredClockSpeed) MT/s (rated $($_.Speed))" })
+        cpu        = @(Get-CimInstance Win32_Processor | ForEach-Object { "$($_.Name.Trim()) - $($_.NumberOfCores)C/$($_.NumberOfLogicalProcessors)T" })
+        gpus       = @(Get-CimInstance Win32_VideoController | ForEach-Object { [ordered]@{ name = $_.Name; vram_gb = $gpuReg[$_.Name]; driver = $_.DriverVersion; driver_date = "$($_.DriverDate)"; status = $_.Status } })
+        laptop     = [bool](Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue)
+        disks      = @(Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Used -ne $null } | ForEach-Object { "$($_.Name): $([math]::Round($_.Free/1GB)) GB free of $([math]::Round(($_.Used+$_.Free)/1GB)) GB" })
+        physical_disks = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object { "$($_.FriendlyName) $($_.MediaType) $([math]::Round($_.Size/1GB)) GB health=$($_.HealthStatus)" })
+        power_plan = (powercfg /getactivescheme) -join ' '
+        gpu_hw_scheduling = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -ErrorAction SilentlyContinue).HwSchMode
+        pagefile   = @(Get-CimInstance Win32_PageFileUsage | ForEach-Object { "$($_.Name) $($_.AllocatedBaseSize) MB" })
+        startup_apps = @(Get-CimInstance Win32_StartupCommand | ForEach-Object { "$($_.Name) [$($_.Location)]" })
+        top_memory = @(Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 12 | ForEach-Object { "$($_.ProcessName) $([math]::Round($_.WorkingSet64/1MB)) MB" })
+        uptime_hours = [math]::Round(((Get-Date) - $os.LastBootUpTime).TotalHours, 1)
+        torch      = "$torch"
+    }
+}
+
 function Invoke-BridgeTick {
     # 1) pick up new jobs, oldest name first
     foreach ($f in (Get-ChildItem $Inbox -File -Filter '*.json' | Sort-Object Name)) {
         $job = Join-Path $Work $f.Name
         Move-Item -Force $f.FullName $job
-        $name = $f.Name -replace '\.(prompt|download)\.json$', '' -replace '\.json$', ''
+        $name = $f.Name -replace '\.(prompt|download|sysinfo)\.json$', '' -replace '\.json$', ''
         try {
-            if ($f.Name -like '*.download.json') {
+            if ($f.Name -like '*.sysinfo.json') {
+                Write-Host '[inbox] Reading system info (read-only)...' -ForegroundColor Cyan
+                Write-Result $name @{ status = 'done'; type = 'sysinfo'; report = (Get-SystemReport) }
+                Remove-Item -Force $job
+            } elseif ($f.Name -like '*.download.json') {
                 $d = Get-Content -Raw -Encoding UTF8 $job | ConvertFrom-Json
                 if ($d.url -notlike 'https://huggingface.co/*') { throw 'Only huggingface.co downloads are allowed.' }
                 if ($AllowedDirs -notcontains $d.dir) { throw "Folder '$($d.dir)' is not allowed." }
