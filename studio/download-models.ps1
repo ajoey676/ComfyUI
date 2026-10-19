@@ -20,7 +20,7 @@ foreach ($f in $files) {
     $part = "$dest.part"
     if (Test-Path $dest) { Write-Host "  [done] $($f.Name)" -ForegroundColor Green; continue }
     Write-Host "  Downloading $($f.Name) ($($f.Size))..."
-    & curl.exe -L --fail --retry 5 -C - -o $part $f.Url
+    & curl.exe -L --fail --retry 5 --ssl-no-revoke -C - -o $part $f.Url
     if ($LASTEXITCODE -ne 0) { throw "Download failed for $($f.Name). Check your internet and run this again - it resumes where it stopped." }
     Move-Item -Force $part $dest
 }
